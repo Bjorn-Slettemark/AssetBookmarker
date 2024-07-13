@@ -19,7 +19,6 @@ using System.Collections.Generic;
 
     The bookmark list is saved between Unity sessions, ensuring that your bookmarks are retained for ongoing and future work.
 */
-
 public class AssetBookmarksEditor : EditorWindow
 {
     private static List<UnityEngine.Object> bookmarkedObjects = new List<UnityEngine.Object>();
@@ -28,17 +27,23 @@ public class AssetBookmarksEditor : EditorWindow
     private SortType currentSortType = SortType.Name;
     private bool sortAscending = true;
     private GUIStyle headerStyle;
+    private Vector2 scrollPosition;
 
-    // Constants for PlayerPrefs keys
+    // Constants for PlayerPrefs keys (Ensure they are at class level and not inside any method)
     private const string BookmarkKeyPrefix = "Bookmark_";
     private const string SortTypeKey = "SortType";
     private const string SortAscendingKey = "SortAscending";
+
+    private float mouseDownTime;
+    private Vector2 mouseDownPosition;
+    private const float dragThreshold = 0.5f; // Time in seconds to hold before initiating drag
+    private const float dragDistance = 5f; // Distance in pixels to move before initiating drag
 
     [MenuItem("Assets/Add to Bookmarks", false, 1200)]
     public static void AddToBookmarks()
     {
         UnityEngine.Object[] newObjects = Selection.objects;
-        foreach (UnityEngine.Object newObject in newObjects)
+        foreach (var newObject in newObjects)
         {
             if (newObject != null && !bookmarkedObjects.Contains(newObject))
             {
@@ -48,114 +53,250 @@ public class AssetBookmarksEditor : EditorWindow
         SaveBookmarks();
     }
 
-    [MenuItem("Window/Asset Management/Asset Bookmarks", false, 1800)]
+    [MenuItem("Window/Asset Management/Asset Bookmarks")]
     public static void ShowWindow()
     {
-        AssetBookmarksEditor window = (AssetBookmarksEditor)EditorWindow.GetWindow(typeof(AssetBookmarksEditor));
-        GUIContent titleContent = new GUIContent("Asset Bookmarks", EditorGUIUtility.IconContent("Favorite").image);
-        window.titleContent = titleContent;
+        var window = GetWindow<AssetBookmarksEditor>("Asset Bookmarks");
+        window.Show();
         LoadBookmarks();
     }
 
-    void OnEnable()
+    private void OnEnable()
     {
         LoadSortSettings();
         LoadBookmarks();
     }
 
-    void OnDisable()
+    private void OnDisable()
     {
         SaveSortSettings();
         SaveBookmarks();
     }
 
-    void OnGUI()
+    private void OnGUI()
     {
         if (headerStyle == null)
         {
-            headerStyle = new GUIStyle(EditorStyles.label);
-            headerStyle.fontSize = 12;
+            headerStyle = new GUIStyle(EditorStyles.label) { fontSize = 12 };
         }
 
         Event evt = Event.current;
+        Debug.Log("Event Type: " + evt.type + ", Mouse Position: " + evt.mousePosition);
 
-        // Define drop area covering the entire window
+        // Process drag and drop interactions
+        HandleExternalDragAndDrop(evt);
+
+        // Toolbar and sorting headers
+        RenderHeaders();
+
+        // Render bookmarks list
+        RenderBookmarksList(evt);
+    }
+
+    private void HandleExternalDragAndDrop(Event evt)
+    {
         Rect dropArea = new Rect(0, 0, position.width, position.height);
-
-        switch (evt.type)
+        if (dropArea.Contains(evt.mousePosition))
         {
-            case EventType.DragUpdated:
-            case EventType.DragPerform:
-                if (!dropArea.Contains(evt.mousePosition))
-                    break;
-
+            if (evt.type == EventType.DragUpdated || evt.type == EventType.DragPerform)
+            {
                 DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
-
                 if (evt.type == EventType.DragPerform)
                 {
                     DragAndDrop.AcceptDrag();
-
-                    foreach (UnityEngine.Object draggedObject in DragAndDrop.objectReferences)
+                    foreach (var draggedObject in DragAndDrop.objectReferences)
                     {
                         if (!bookmarkedObjects.Contains(draggedObject))
                         {
                             bookmarkedObjects.Add(draggedObject);
                         }
                     }
-
                     SaveBookmarks();
+                    evt.Use();
                 }
-                break;
+            }
         }
+    }
 
+    private void RenderHeaders()
+    {
         GUILayout.BeginHorizontal(EditorStyles.toolbar);
         DrawSortableHeader("Name", SortType.Name);
         DrawSortableHeader("Asset", SortType.Asset);
         DrawSortableHeader("Type", SortType.Type);
         DrawSortableHeader("Date", SortType.TimeAdded);
         GUILayout.EndHorizontal();
+    }
 
-        GUI.Box(dropArea, "");
-
+    private void RenderBookmarksList(Event evt)
+    {
+        scrollPosition = GUILayout.BeginScrollView(scrollPosition, false, true);
         UnityEngine.Object objectToRemove = null;
 
-        if (bookmarkedObjects.Count > 0)
+        for (int i = 0; i < bookmarkedObjects.Count; i++)
         {
-            ScrollPosition = GUILayout.BeginScrollView(ScrollPosition, false, true);
-            foreach (UnityEngine.Object obj in bookmarkedObjects)
+            var obj = bookmarkedObjects[i];
+            if (obj == null) continue;
+
+            GUILayout.BeginHorizontal();
+
+            Rect entireRowRect = GUILayoutUtility.GetRect(0, 20, GUILayout.ExpandWidth(true));
+            Rect iconRect = new Rect(entireRowRect.x, entireRowRect.y, 20, 20);
+            Rect labelRect = new Rect(iconRect.xMax, entireRowRect.y, entireRowRect.width - 40, 20);
+            Rect removeButtonRect = new Rect(labelRect.xMax, entireRowRect.y, 20, 20);
+
+            // Draw icon
+            Texture icon = AssetPreview.GetMiniThumbnail(obj);
+            GUI.DrawTexture(iconRect, icon);
+
+            // Draw label
+            string objectName = GetObjectNameWithParentFolder(obj);
+            GUI.Label(labelRect, objectName);
+
+            // Draw remove button
+            if (GUI.Button(removeButtonRect, "-"))
             {
-                if (obj == null) continue; // Skip null entries
-
-                GUILayout.BeginHorizontal();
-
-                Texture icon = AssetPreview.GetMiniThumbnail(obj);
-                GUILayout.Label(icon, GUILayout.Width(20), GUILayout.Height(20));
-
-                string objectName = GetObjectNameWithParentFolder(obj);
-                if (GUILayout.Button(objectName))
-                {
-                    selectedObject = obj;
-                    EditorGUIUtility.PingObject(obj);
-                    Selection.activeObject = obj;
-                }
-
-                if (GUILayout.Button("-", GUILayout.Width(20)))
-                {
-                    objectToRemove = obj;
-                    // Note: We don't break here to ensure GUI layout consistency
-                }
-
-                GUILayout.EndHorizontal();
+                objectToRemove = obj;
             }
-            GUILayout.EndScrollView();
+
+            // Handle interactions
+            HandleAssetInteractions(evt, obj, objectName, entireRowRect, i);
+
+            GUILayout.EndHorizontal();
         }
 
         if (objectToRemove != null)
         {
             bookmarkedObjects.Remove(objectToRemove);
-            SaveBookmarks(); // Remember to save changes
+            SaveBookmarks();
+        }
+
+        GUILayout.EndScrollView();
+
+        if (evt.type == EventType.MouseUp || evt.type == EventType.MouseLeaveWindow)
+        {
+            mouseDownTime = 0;
+            mouseDownPosition = Vector2.zero;
         }
     }
+
+    private void HandleAssetInteractions(Event evt, UnityEngine.Object obj, string objectName, Rect itemRect, int index)
+    {
+        switch (evt.type)
+        {
+            case EventType.MouseDown:
+                if (itemRect.Contains(evt.mousePosition) && evt.button == 0)
+                {
+                    mouseDownTime = Time.realtimeSinceStartup;
+                    mouseDownPosition = evt.mousePosition;
+                    evt.Use();
+                }
+                break;
+
+            case EventType.MouseUp:
+                if (itemRect.Contains(evt.mousePosition) && evt.button == 0)
+                {
+                    float mouseUpTime = Time.realtimeSinceStartup;
+                    if (mouseUpTime - mouseDownTime < dragThreshold)
+                    {
+                        // This was a click, not a drag attempt
+                        selectedObject = obj;
+                        EditorGUIUtility.PingObject(obj);
+                        Selection.activeObject = obj;
+                    }
+                    evt.Use();
+                }
+                break;
+
+            case EventType.MouseDrag:
+                if (evt.button == 0 && itemRect.Contains(mouseDownPosition))
+                {
+                    float currentTime = Time.realtimeSinceStartup;
+                    float mouseHoldTime = currentTime - mouseDownTime;
+                    float dragDistanceMoved = Vector2.Distance(mouseDownPosition, evt.mousePosition);
+
+                    if (mouseHoldTime > dragThreshold || dragDistanceMoved > dragDistance)
+                    {
+                        DragAndDrop.PrepareStartDrag();
+                        DragAndDrop.objectReferences = new UnityEngine.Object[] { obj };
+                        DragAndDrop.SetGenericData("BookmarkIndex", index);
+                        DragAndDrop.StartDrag(objectName);
+                        evt.Use();
+                    }
+                }
+                break;
+
+            case EventType.MouseMove:
+                Repaint(); // Ensure the window updates for hover effects
+                break;
+
+            case EventType.DragUpdated:
+            case EventType.DragPerform:
+                if (itemRect.Contains(evt.mousePosition))
+                {
+                    DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
+
+                    if (evt.type == EventType.DragPerform)
+                    {
+                        DragAndDrop.AcceptDrag();
+
+                        foreach (UnityEngine.Object draggedObject in DragAndDrop.objectReferences)
+                        {
+                            if (!bookmarkedObjects.Contains(draggedObject))
+                            {
+                                bookmarkedObjects.Add(draggedObject);
+                            }
+                        }
+
+                        SaveBookmarks();
+                    }
+                    evt.Use();
+                }
+                break;
+        }
+    }
+    private void HandleDragFromBookmarks(Event evt, UnityEngine.Object obj, string objectName, Rect itemRect, int index)
+    {
+        switch (evt.type)
+        {
+            case EventType.MouseDown:
+                if (evt.button == 0 && itemRect.Contains(evt.mousePosition))
+                {
+                    DragAndDrop.PrepareStartDrag();
+                    DragAndDrop.objectReferences = new UnityEngine.Object[] { obj };
+                    DragAndDrop.SetGenericData("BookmarkIndex", index);
+                    DragAndDrop.StartDrag(objectName);
+                    evt.Use();
+                }
+                break;
+
+            case EventType.DragUpdated:
+            case EventType.DragPerform:
+                if (itemRect.Contains(evt.mousePosition))
+                {
+                    DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
+
+                    if (evt.type == EventType.DragPerform)
+                    {
+                        DragAndDrop.AcceptDrag();
+
+                        foreach (UnityEngine.Object draggedObject in DragAndDrop.objectReferences)
+                        {
+                            if (!bookmarkedObjects.Contains(draggedObject))
+                            {
+                                bookmarkedObjects.Add(draggedObject);
+                            }
+                        }
+
+                        SaveBookmarks();
+                    }
+                    evt.Use();
+                }
+                break;
+        }
+    }
+
+
     private static string GetObjectNameWithParentFolder(UnityEngine.Object obj)
     {
         string objectName = obj.name;
@@ -283,6 +424,4 @@ public class AssetBookmarksEditor : EditorWindow
             EditorPrefs.SetString(key, assetPath);
         }
     }
-
-    private Vector2 ScrollPosition;
 }
